@@ -2,7 +2,7 @@
 // 1. Create a new Next.js project: npx create-next-app@latest advanced-chat-frontend
 // 2. Choose TypeScript and Tailwind CSS during setup.
 // 3. cd advanced-chat-frontend
-// 4. Install dependencies: npm i lucide-react crypto-js @types/crypto-js
+// 4. Install dependencies: npm i lucide-react crypto-js @types/crypto-js emoji-picker-react
 // 5. Replace the content of app/page.tsx with this entire code block.
 // 6. Create the next.config.js file as described in the setup guide.
 // 7. Make sure your NestJS backend is running.
@@ -11,8 +11,13 @@
 'use client';
 
 import React, { useState, useEffect, useRef, createContext, useContext, FC, ReactNode } from 'react';
-import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, Download, Upload, User, Users, LogOut, Mic, MicOff, Link2, Music } from 'lucide-react';
-import * as CryptoJS from 'crypto-js';
+import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, User, Users, LogOut, Mic, MicOff, Link2, Music, Smile, Trash2, Edit } from 'lucide-react';
+import type { EmojiClickData } from 'emoji-picker-react';
+import dynamic from 'next/dynamic';
+import { Theme } from 'emoji-picker-react';
+
+const CryptoJS = require('crypto-js');
+const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
 
 
 // --- TYPES AND INTERFACES ---
@@ -23,12 +28,14 @@ interface User {
 }
 
 interface Message {
+  id: string; // Unique ID for each message
   text?: string;
   file?: { name: string; url: string; data: string };
   sender: User;
   target: 'general' | string;
   timestamp: string;
   isMe: boolean;
+  isEdited?: boolean;
 }
 
 interface SocketContextType {
@@ -219,19 +226,52 @@ const MessageContent: FC<{ text: string }> = ({ text }) => {
 };
 
 
-const ChatMessage: FC<{ msg: Message }> = ({ msg }) => {
+const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void; onDelete: (id: string) => void; }> = ({ msg, onEdit, onDelete }) => {
   const bubbleClass = msg.isMe ? 'bg-blue-600 self-end' : 'bg-gray-700 self-start';
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(msg.text || '');
+
+  const handleSaveEdit = () => {
+    onEdit(msg.id, editText);
+    setIsEditing(false);
+  };
+
   return (
-    <div className={`flex flex-col mb-4 ${msg.isMe ? 'items-end' : 'items-start'}`}>
-        <div className="text-xs text-gray-400 mb-1">{msg.isMe ? 'You' : msg.sender.name}</div>
-        <div className={`max-w-lg p-3 rounded-xl ${bubbleClass} break-words`}>
+    <div className={`group flex items-end gap-2 mb-4 ${msg.isMe ? 'flex-row-reverse' : ''}`}>
+      <div className={`max-w-lg p-3 rounded-xl ${bubbleClass} break-words`}>
+        {isEditing ? (
+          <div>
+            <input 
+              type="text" 
+              value={editText} 
+              onChange={(e) => setEditText(e.target.value)}
+              className="w-full bg-gray-900/50 p-2 rounded"
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit()}
+              autoFocus
+            />
+            <div className="text-right mt-2">
+              <button onClick={() => setIsEditing(false)} className="text-xs text-gray-400 mr-2">Cancel</button>
+              <button onClick={handleSaveEdit} className="text-xs text-blue-400">Save</button>
+            </div>
+          </div>
+        ) : (
+          <>
             {msg.text && <MessageContent text={msg.text} />}
             {msg.file && (
                 <a href={msg.file.data} download={msg.file.name} className="flex items-center underline text-blue-300">
                     <Paperclip size={16} className="mr-2" /> {msg.file.name}
                 </a>
             )}
+            {msg.isEdited && <span className="text-xs text-gray-400/70 ml-2">(edited)</span>}
+          </>
+        )}
+      </div>
+      {msg.isMe && !isEditing && msg.text && (
+        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onClick={() => setIsEditing(true)} className="p-1 text-gray-400 hover:text-white"><Edit size={14} /></button>
+          <button onClick={() => onDelete(msg.id)} className="p-1 text-gray-400 hover:text-white"><Trash2 size={14} /></button>
         </div>
+      )}
     </div>
   );
 };
@@ -240,28 +280,70 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
   const { sendMessage, currentUser, users } = useSocket();
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatHistory, setChatHistory] = useState(initialHistory);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const messageInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { socket } = useSocket();
   const selectedUser = users.find(u => u.id === selectedChat.id);
+  
+  const emojiMap: { [key: string]: string } = {
+    ':)': '😊', ':-)': '😊',
+    ':D': '😀', ':-D': '😀',
+    ':(': '😞', ':-(': '�',
+    ':O': '😮', ':-O': '😮',
+    '<3': '❤️',
+    ':P': '😛', ':-P': '😛',
+    ';)': '😉', ';-)': '😉',
+  };
+
+  const replaceEmojiCodes = (text: string) => {
+    let newText = text;
+    const sortedCodes = Object.keys(emojiMap).sort((a, b) => b.length - a.length);
+    sortedCodes.forEach(code => {
+      newText = newText.replace(new RegExp(code.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), emojiMap[code]);
+    });
+    return newText;
+  };
 
   useEffect(() => {
     if (socket) {
-        const handleNewMessage = (event: MessageEvent) => {
+        const handleMessage = (event: MessageEvent) => {
             const { event: msgEvent, data } = JSON.parse(event.data);
+            
             if (msgEvent === 'new_message' || msgEvent === 'new_file_message') {
                 const decryptedPayload = data.payload ? JSON.parse(decrypt(data.payload)) : null;
                 const newMsg: Message = { ...data, ...decryptedPayload, isMe: false };
                 const chatKey = newMsg.target === 'general' ? 'general' : newMsg.sender.id;
                 setChatHistory(prev => ({ ...prev, [chatKey]: [...(prev[chatKey] || []), newMsg] }));
             }
+            if (msgEvent === 'message_edited') {
+              const { messageId, newText, target } = data;
+              setChatHistory(prev => {
+                const newHistory = { ...prev };
+                const chat = newHistory[target] || [];
+                const msgIndex = chat.findIndex(m => m.id === messageId);
+                if (msgIndex > -1) {
+                  chat[msgIndex].text = newText;
+                  chat[msgIndex].isEdited = true;
+                }
+                return newHistory;
+              });
+            }
+            if (msgEvent === 'message_deleted') {
+              const { messageId, target } = data;
+              setChatHistory(prev => {
+                const newHistory = { ...prev };
+                newHistory[target] = (newHistory[target] || []).filter(m => m.id !== messageId);
+                return newHistory;
+              });
+            }
         };
-        socket.addEventListener('message', handleNewMessage);
-        return () => socket.removeEventListener('message', handleNewMessage);
+        socket.addEventListener('message', handleMessage);
+        return () => socket.removeEventListener('message', handleMessage);
     }
   }, [socket]);
   
-  // Real-time saving to localStorage
   useEffect(() => {
     if (currentUser && Object.keys(chatHistory).length > 0) {
       const encryptedHistory = encrypt(JSON.stringify(chatHistory));
@@ -274,11 +356,13 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
 
   const handleSendMessage = (text: string) => {
     if (!text || !currentUser) return;
-    const payload = { text };
+    const textWithEmojis = replaceEmojiCodes(text);
+    const messageId = CryptoJS.lib.WordArray.random(16).toString();
+    const payload = { id: messageId, text: textWithEmojis };
     const encryptedPayload = encrypt(JSON.stringify(payload));
     const messageType = selectedChat.id === 'general' ? 'general_message' : 'private_message';
     sendMessage(messageType, { payload: encryptedPayload, targetId: selectedChat.id });
-    const newMsg: Message = { text, sender: currentUser, target: selectedChat.id, timestamp: new Date().toISOString(), isMe: true };
+    const newMsg: Message = { id: messageId, text: textWithEmojis, sender: currentUser, target: selectedChat.id, timestamp: new Date().toISOString(), isMe: true };
     setChatHistory(prev => ({ ...prev, [selectedChat.id]: [...(prev[selectedChat.id] || []), newMsg] }));
   };
   
@@ -286,7 +370,7 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
     const file = e.target.files?.[0];
     if (!file || !currentUser) return;
 
-    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+    if (file.size > 5 * 1024 * 1024) {
       alert("File is too large. Please upload files under 5MB.");
       return;
     }
@@ -294,18 +378,49 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
     const reader = new FileReader();
     reader.onload = (event) => {
       const fileData = event.target?.result as string;
-      const payload = { file: { name: file.name, data: fileData } };
+      const messageId = CryptoJS.lib.WordArray.random(16).toString();
+      const payload = { id: messageId, file: { name: file.name, data: fileData } };
       const encryptedPayload = encrypt(JSON.stringify(payload));
       const messageType = selectedChat.id === 'general' ? 'file_message_general' : 'file_message_private';
       sendMessage(messageType, { payload: encryptedPayload, targetId: selectedChat.id });
       
-      const newMsg: Message = { file: { name: file.name, url: '', data: fileData }, sender: currentUser, target: selectedChat.id, timestamp: new Date().toISOString(), isMe: true };
+      const newMsg: Message = { id: messageId, file: { name: file.name, url: '', data: fileData }, sender: currentUser, target: selectedChat.id, timestamp: new Date().toISOString(), isMe: true };
       setChatHistory(prev => ({ ...prev, [selectedChat.id]: [...(prev[selectedChat.id] || []), newMsg] }));
     };
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
+  const handleEditMessage = (messageId: string, newText: string) => {
+    sendMessage('edit_message', { messageId, newText, target: selectedChat.id });
+    setChatHistory(prev => {
+      const newHistory = { ...prev };
+      const chat = newHistory[selectedChat.id] || [];
+      const msgIndex = chat.findIndex(m => m.id === messageId);
+      if (msgIndex > -1) {
+        chat[msgIndex].text = newText;
+        chat[msgIndex].isEdited = true;
+      }
+      return newHistory;
+    });
+  };
+
+  const handleDeleteMessage = (messageId: string) => {
+    if (window.confirm("Are you sure you want to delete this message?")) {
+      sendMessage('delete_message', { messageId, target: selectedChat.id });
+      setChatHistory(prev => {
+        const newHistory = { ...prev };
+        newHistory[selectedChat.id] = (newHistory[selectedChat.id] || []).filter(m => m.id !== messageId);
+        return newHistory;
+      });
+    }
+  };
+
+  const onEmojiClick = (emojiData: EmojiClickData) => {
+    if (messageInputRef.current) {
+      messageInputRef.current.value += emojiData.emoji;
+    }
+  };
 
   return (
     <div className="w-3/4 flex flex-col bg-gray-900/80 backdrop-blur-sm">
@@ -324,14 +439,20 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
         </div>
       </header>
       <main className="flex-grow p-4 overflow-y-auto">
-        {messages.map((msg, i) => <ChatMessage key={i} msg={msg} />)}
+        {messages.map((msg) => <ChatMessage key={msg.id} msg={msg} onEdit={handleEditMessage} onDelete={handleDeleteMessage} />)}
         <div ref={messagesEndRef} />
       </main>
-      <footer className="p-4 border-t border-gray-700/50">
+      <footer className="p-4 border-t border-gray-700/50 relative">
+        {showEmojiPicker && (
+          <div className="absolute bottom-full mb-2">
+            <EmojiPicker onEmojiClick={onEmojiClick} theme={Theme.DARK} />
+          </div>
+        )}
         <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(e.currentTarget.message.value); e.currentTarget.reset(); }} className="flex items-center space-x-4">
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
           <button type="button" onClick={() => fileInputRef.current?.click()} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Paperclip /></button>
-          <input name="message" placeholder="Type an encrypted message..." className="flex-grow bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <button type="button" onClick={() => setShowEmojiPicker(p => !p)} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Smile /></button>
+          <input ref={messageInputRef} name="message" placeholder="Type an encrypted message..." className="flex-grow bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
           <button type="submit" className="p-3 bg-blue-600 hover:bg-blue-700 rounded-full transition-colors"><Send /></button>
         </form>
       </footer>
@@ -453,7 +574,6 @@ const App: FC = () => {
 
     useEffect(() => {
         setIsMounted(true);
-        // Load history from localStorage on initial mount
         const userId = localStorage.getItem('chat_user_id');
         if (userId) {
             const encryptedHistory = localStorage.getItem(`chat_history_${userId}`);
