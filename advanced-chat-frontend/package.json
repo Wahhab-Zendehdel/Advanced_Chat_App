@@ -3,15 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-  "dev": "node server.js",
-  "build": "next build",
-  "start": "NODE_ENV=production node server.js",
-  "lint": "next lint"
+    "dev": "node server.js",
+    "build": "next build",
+    "start": "NODE_ENV=production node server.js",
+    "lint": "next lint"
   },
   "dependencies": {
     "@types/crypto-js": "^4.2.2",
     "crypto-js": "^4.2.0",
+    "emoji-picker-react": "^4.13.2",
     "lucide-react": "^0.539.0",
+    "mediasoup-client": "^3.15.2",
     "next": "15.4.6",
     "react": "19.1.0",
     "react-dom": "19.1.0"

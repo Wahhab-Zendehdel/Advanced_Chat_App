@@ -1,9 +1,13 @@
+// src/chat.gateway.ts
+
 import {
   SubscribeMessage,
   WebSocketGateway,
   OnGatewayConnection,
   OnGatewayDisconnect,
   WebSocketServer,
+  MessageBody,
+  ConnectedSocket,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
@@ -20,29 +24,27 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private logger: Logger = new Logger('ChatGateway');
   private users = new Map<string, User>();
+  
+  // Keep track of which users are in the group call
+  private groupCallUsers = new Set<string>();
 
   handleConnection(client: WebSocket) {
-    this.logger.log(`Client connected`);
+    this.logger.log('Client connected');
   }
 
   handleDisconnect(client: WebSocket) {
-    const disconnectedUser = this.findUserByWs(client);
-    if (disconnectedUser) {
-      this.users.delete(disconnectedUser.id);
-      this.logger.log(`Client disconnected: ${disconnectedUser.name}`);
+    const user = this.findUserByWs(client);
+    if (user) {
+      this.logger.log(`Client disconnected: ${user.name}`);
+      this.users.delete(user.id);
+      this.groupCallUsers.delete(user.id); // Remove from group call on disconnect
       this.broadcastUserList();
+      this.broadcastGroupCallUpdate();
     }
   }
 
   private findUserByWs(ws: WebSocket): User | undefined {
-    for (const user of this.users.values()) {
-      if (user.ws === ws) return user;
-    }
-    return undefined;
-  }
-
-  private generateUniqueId(): string {
-    return Math.random().toString(36).substring(2, 15);
+    return Array.from(this.users.values()).find(u => u.ws === ws);
   }
 
   private broadcastUserList() {
@@ -50,113 +52,97 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const message = JSON.stringify({ event: 'user_list_update', data: { users: userList } });
     this.users.forEach(user => user.ws.send(message));
   }
+  
+  private broadcastGroupCallUpdate() {
+      const groupCallUserList = Array.from(this.groupCallUsers);
+      const message = JSON.stringify({ event: 'group_call_update', data: { users: groupCallUserList }});
+      this.users.forEach(user => user.ws.send(message));
+  }
 
   @SubscribeMessage('login')
-  handleLogin(client: WebSocket, payload: { name: string }): void {
-    const clientId = this.generateUniqueId();
+  handleLogin(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { name: string }): void {
+    const clientId = Math.random().toString(36).substring(2, 15);
     const newUser: User = { id: clientId, name: payload.name, ws: client, status: 'online' };
     this.users.set(clientId, newUser);
     
-    this.logger.log(`User logged in: ${payload.name} (${clientId})`);
-    
-    const loginSuccessMsg = JSON.stringify({
-        event: 'login_success',
-        data: { user: { id: newUser.id, name: newUser.name, status: 'online' } }
-    });
-    client.send(loginSuccessMsg);
-
+    client.send(JSON.stringify({ event: 'login_success', data: { user: newUser } }));
     this.broadcastUserList();
+    this.broadcastGroupCallUpdate();
   }
 
-  // Handler for text messages
-  private handleEncryptedMessage(client: WebSocket, payload: { targetId?: string; payload: string }, eventType: string, targetType: 'general' | 'private') {
+  @SubscribeMessage('webrtc_signal')
+  handleWebrtcSignal(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string; type: string; [key: string]: any }): void {
     const sender = this.findUserByWs(client);
     if (!sender) return;
 
-    const message = {
-        event: eventType,
-        data: {
-            sender: { id: sender.id, name: sender.name },
-            target: targetType === 'general' ? 'general' : sender.id,
-            payload: payload.payload, // Forward the encrypted payload
-        }
-    };
-
-    if (targetType === 'general') {
-        this.users.forEach(user => {
-            if (user.id !== sender.id) user.ws.send(JSON.stringify(message));
-        });
-    } else {
-        // FIX: Add a check to ensure targetId exists before using it.
-        if (payload.targetId) {
-            const target = this.users.get(payload.targetId);
-            if (target) {
-                target.ws.send(JSON.stringify(message));
-            }
-        }
-    }
-  }
-
-  @SubscribeMessage('general_message')
-  handleGeneralMessage(client: WebSocket, payload: { payload: string }): void {
-    this.handleEncryptedMessage(client, payload, 'new_message', 'general');
-  }
-
-  @SubscribeMessage('private_message')
-  handlePrivateMessage(client: WebSocket, payload: { targetId: string; payload: string }): void {
-    this.handleEncryptedMessage(client, payload, 'new_message', 'private');
-  }
-
-  @SubscribeMessage('file_message_general')
-  handleFileMessageGeneral(client: WebSocket, payload: { payload: string }): void {
-    this.handleEncryptedMessage(client, payload, 'new_file_message', 'general');
-  }
-
-  @SubscribeMessage('file_message_private')
-  handleFileMessagePrivate(client: WebSocket, payload: { targetId: string; payload: string }): void {
-    this.handleEncryptedMessage(client, payload, 'new_file_message', 'private');
-  }
-  
-  @SubscribeMessage('webrtc_signal')
-  handleWebRtcSignal(client: WebSocket, payload: any): void {
-    const sender = this.findUserByWs(client);
     const target = this.users.get(payload.targetId);
-
-    if (!sender || !target) return;
+    if (!target) return;
 
     if (payload.type === 'offer' && target.status === 'busy') {
-        sender.ws.send(JSON.stringify({ event: 'target_busy', data: { name: target.name } }));
-        return;
+      client.send(JSON.stringify({ event: 'target_busy', data: { name: target.name } }));
+      return;
     }
     
-    if (payload.type === 'offer' || payload.type === 'answer') {
-        sender.status = 'busy';
-        target.status = 'busy';
-        this.broadcastUserList();
-    }
+    const message = JSON.stringify({
+      event: 'webrtc_signal',
+      data: { ...payload, sender: { id: sender.id, name: sender.name, status: sender.status } },
+    });
+    target.ws.send(message);
 
-    const signalPayload = {
-        event: 'webrtc_signal',
-        data: { ...payload, sender: { id: sender.id, name: sender.name, status: sender.status } }
-    };
-    target.ws.send(JSON.stringify(signalPayload));
+    if (payload.type === 'offer') {
+      sender.status = 'busy';
+      this.broadcastUserList();
+    } else if (payload.type === 'answer') {
+      sender.status = 'busy';
+      target.status = 'busy';
+      this.broadcastUserList();
+    }
+  }
+  
+  @SubscribeMessage('end_call')
+  handleEndCall(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string }): void {
+      const sender = this.findUserByWs(client);
+      if (sender) sender.status = 'online';
+
+      const target = this.users.get(payload.targetId);
+      if (target) {
+          target.status = 'online';
+          target.ws.send(JSON.stringify({ event: 'call_ended' }));
+      }
+      this.broadcastUserList();
+  }
+  
+  // --- New Group Call Logic ---
+
+  @SubscribeMessage('join_group_call')
+  handleJoinGroupCall(@ConnectedSocket() client: WebSocket): void {
+      const user = this.findUserByWs(client);
+      if (user && !this.groupCallUsers.has(user.id)) {
+          this.groupCallUsers.add(user.id);
+          this.broadcastGroupCallUpdate();
+      }
   }
 
-  @SubscribeMessage('end_call')
-  handleEndCall(client: WebSocket, payload: { targetId?: string }): void {
-    const sender = this.findUserByWs(client);
-    if (!sender) return;
+  @SubscribeMessage('leave_group_call')
+  handleLeaveGroupCall(@ConnectedSocket() client: WebSocket): void {
+      const user = this.findUserByWs(client);
+      if (user && this.groupCallUsers.has(user.id)) {
+          this.groupCallUsers.delete(user.id);
+          this.broadcastGroupCallUpdate();
+      }
+  }
 
-    sender.status = 'online';
-
-    if (payload.targetId) {
-        const target = this.users.get(payload.targetId);
-        if (target) {
-            target.status = 'online';
-            target.ws.send(JSON.stringify({ event: 'call_ended' }));
-        }
-    }
-    
-    this.broadcastUserList();
+  @SubscribeMessage('group_call_signal')
+  handleGroupCallSignal(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string, [key: string]: any }): void {
+      const sender = this.findUserByWs(client);
+      if (!sender) return;
+      
+      const target = this.users.get(payload.targetId);
+      if (target) {
+          target.ws.send(JSON.stringify({
+              event: 'group_call_signal',
+              data: { ...payload, senderId: sender.id }
+          }));
+      }
   }
 }

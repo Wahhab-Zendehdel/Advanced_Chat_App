@@ -13,8 +13,7 @@
 import React, { useState, useEffect, useRef, createContext, useContext, FC, ReactNode } from 'react';
 import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, User, Users, LogOut, Mic, MicOff, Link2, Music, Smile, Trash2, Edit } from 'lucide-react';
 import * as CryptoJS from 'crypto-js';
-import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
-
+import EmojiPicker, { type EmojiClickData, Theme } from 'emoji-picker-react';
 
 // --- TYPES AND INTERFACES ---
 interface User {
@@ -272,7 +271,12 @@ const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void
   );
 };
 
-const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: () => void, initialHistory: Record<string, Message[]> }> = ({ selectedChat, onStartCall, initialHistory }) => {
+const ChatWindow: FC<{ 
+    selectedChat: { id: string, name: string }, 
+    onStartCall: () => void, 
+    onStartGroupCall: () => void, 
+    initialHistory: Record<string, Message[]>
+}> = ({ selectedChat, onStartCall, onStartGroupCall, initialHistory }) => {
   const { sendMessage, currentUser, users } = useSocket();
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatHistory, setChatHistory] = useState(initialHistory);
@@ -423,7 +427,14 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
       <header className="p-4 flex items-center justify-between border-b border-gray-700/50">
         <h2 className="text-xl font-bold text-white">{selectedChat.name}</h2>
         <div className="flex items-center space-x-2">
-          {selectedChat.id !== 'general' && (
+          {selectedChat.id === 'general' ? (
+              <button
+                onClick={onStartGroupCall}
+                className="p-2 bg-green-600 hover:bg-green-700 rounded-full transition-colors"
+              >
+                <Users size={20} />
+              </button>
+            ) : (
             <button 
               onClick={onStartCall} 
               disabled={selectedUser?.status === 'busy'}
@@ -555,19 +566,29 @@ const InCallModal: FC<{
 // --- MAIN APP COMPONENT ---
 
 const App: FC = () => {
+    // Standard states
     const [currentUser, setCurrentUser] = useState<User | null>(null);
     const [users, setUsers] = useState<User[]>([]);
     const [selectedChat, setSelectedChat] = useState({ id: 'general', name: 'General Room' });
+    const [isMounted, setIsMounted] = useState(false);
+    const [initialHistory, setInitialHistory] = useState<Record<string, Message[]>>({ general: [] });
+    
+    // 1-on-1 call states
     const [incomingCall, setIncomingCall] = useState<{ sender: User; offer: any } | null>(null);
     const [isCalling, setIsCalling] = useState(false);
     const [callee, setCallee] = useState<User | null>(null);
-    const socketRef = useRef<WebSocket | null>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
+    
+    // Group call states
+    const [isInGroupCall, setIsInGroupCall] = useState(false);
+    const [groupCallUsers, setGroupCallUsers] = useState<string[]>([]);
+    const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+    
+    // Common call states
     const localStreamRef = useRef<MediaStream | null>(null);
-    const remoteAudioRef = useRef<HTMLAudioElement>(null);
-    const [isMounted, setIsMounted] = useState(false);
-    const [initialHistory, setInitialHistory] = useState<Record<string, Message[]>>({ general: [] });
-
+    const socketRef = useRef<WebSocket | null>(null);
+    const remoteAudiosRef = useRef<HTMLDivElement>(null);
+    
     useEffect(() => {
         setIsMounted(true);
         const userId = localStorage.getItem('chat_user_id');
@@ -585,14 +606,29 @@ const App: FC = () => {
         }
     }, []);
 
-    const cleanupCall = () => {
-      if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
-      if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(track => track.stop()); localStreamRef.current = null; }
-      if (remoteAudioRef.current) { remoteAudioRef.current.srcObject = null; }
-      setIsCalling(false);
-      setCallee(null);
-      setIncomingCall(null);
+    const cleanupCall = (isGroupCall = false) => {
+        if (isGroupCall) {
+            peerConnectionsRef.current.forEach(pc => pc.close());
+            peerConnectionsRef.current.clear();
+            setIsInGroupCall(false);
+        } else {
+            pcRef.current?.close();
+            pcRef.current = null;
+            setIsCalling(false);
+            setCallee(null);
+            setIncomingCall(null);
+        }
+        
+        localStreamRef.current?.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
+        
+        // Clear all audio elements
+        if (remoteAudiosRef.current) {
+            remoteAudiosRef.current.innerHTML = '';
+        }
     };
+
+    const sendMessage = (type: string, payload: any) => { socketRef.current?.send(JSON.stringify({ event: type, data: payload })); };
 
     const connectSocket = (name: string) => {
         const ws = new WebSocket(`wss://${window.location.hostname}:3001`);
@@ -606,34 +642,73 @@ const App: FC = () => {
                     break;
                 case 'user_list_update': setUsers(data.users); break;
                 case 'webrtc_signal': handleSignaling(data); break;
-                case 'target_busy': alert(`${data.name} is currently in another call.`); break;
+                case 'target_busy': alert(`${data.name} is currently in another call.`); cleanupCall(); break;
                 case 'call_ended': cleanupCall(); break;
+                // Group Call Events
+                case 'group_call_update': setGroupCallUsers(data.users); break;
+                case 'group_call_signal': handleGroupCallSignal(data); break;
             }
         };
         ws.onclose = () => { setCurrentUser(null); socketRef.current = null; };
         ws.onerror = () => { alert("Could not connect to the server."); };
         socketRef.current = ws;
     };
+    
+    // Effect to manage group call connections
+    useEffect(() => {
+        if (!isInGroupCall || !currentUser) return;
+
+        const otherUsersInCall = groupCallUsers.filter(id => id !== currentUser.id);
+        
+        // Connect to new users
+        for (const userId of otherUsersInCall) {
+            // FIX: Only the user with the lexicographically smaller ID initiates the offer
+            if (!peerConnectionsRef.current.has(userId) && currentUser.id < userId) {
+                console.log(`Creating offer for ${userId}`);
+                const pc = createGroupPeerConnection(userId);
+                peerConnectionsRef.current.set(userId, pc);
+                
+                pc.createOffer()
+                  .then(offer => pc.setLocalDescription(offer))
+                  .then(() => {
+                      sendMessage('group_call_signal', {
+                          targetId: userId,
+                          type: 'offer',
+                          offer: pc.localDescription
+                      });
+                  });
+            }
+        }
+
+        // Disconnect from users who left
+        peerConnectionsRef.current.forEach((pc, userId) => {
+            if (!otherUsersInCall.includes(userId)) {
+                console.log(`Closing peer connection to ${userId}`);
+                pc.close();
+                peerConnectionsRef.current.delete(userId);
+            }
+        });
+
+    }, [groupCallUsers, isInGroupCall, currentUser]);
+
 
     const handleLogout = () => {
       socketRef.current?.close();
       localStorage.removeItem('chat_user_id');
     };
-    const sendMessage = (type: string, payload: any) => { socketRef.current?.send(JSON.stringify({ event: type, data: payload })); };
-
+    
     const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     const createPeerConnection = (targetId: string) => {
         const pc = new RTCPeerConnection(rtcConfig);
         pc.onicecandidate = (e) => { if (e.candidate) { sendMessage('webrtc_signal', { targetId, type: 'ice_candidate', candidate: e.candidate }); } };
-        pc.ontrack = (e) => { if (remoteAudioRef.current) { remoteAudioRef.current.srcObject = e.streams[0]; } };
-        
-        pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-            cleanupCall();
-          }
+        pc.ontrack = (e) => {
+            const remoteAudio = document.createElement('audio');
+            remoteAudio.srcObject = e.streams[0];
+            remoteAudio.autoplay = true;
+            remoteAudiosRef.current?.appendChild(remoteAudio);
         };
-
+        pc.onconnectionstatechange = () => { if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') cleanupCall(); };
         localStreamRef.current?.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current!));
         return pc;
     };
@@ -641,7 +716,6 @@ const App: FC = () => {
     const handleStartCall = async () => {
         const targetUser = users.find(u => u.id === selectedChat.id);
         if (!targetUser || targetUser.status === 'busy') return;
-        if (!navigator.mediaDevices) { alert("Your browser does not support voice calls."); return; }
         try {
             localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
             pcRef.current = createPeerConnection(targetUser.id);
@@ -654,6 +728,7 @@ const App: FC = () => {
     };
     
     const handleSignaling = async (data: any) => {
+        if (!pcRef.current && data.type !== 'offer') return;
         switch (data.type) {
             case 'offer': setIncomingCall({ sender: data.sender, offer: data.offer }); break;
             case 'answer': await pcRef.current?.setRemoteDescription(new RTCSessionDescription(data.answer)); break;
@@ -663,7 +738,6 @@ const App: FC = () => {
 
     const handleAcceptCall = async () => {
         if (!incomingCall) return;
-        if (!navigator.mediaDevices) { alert("Your browser does not support voice calls."); return; }
         try {
             localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
             pcRef.current = createPeerConnection(incomingCall.sender.id);
@@ -685,14 +759,86 @@ const App: FC = () => {
 
     const handleHangUp = () => {
       const targetId = callee?.id || incomingCall?.sender.id;
-      if (targetId) {
-        sendMessage('end_call', { targetId });
-      }
+      if (targetId) sendMessage('end_call', { targetId });
       cleanupCall();
+    };
+    
+    // --- New Group Call Logic ---
+    const createGroupPeerConnection = (targetId: string) => {
+        const pc = new RTCPeerConnection(rtcConfig);
+        pc.onicecandidate = (e) => {
+            if (e.candidate) {
+                sendMessage('group_call_signal', {
+                    targetId,
+                    type: 'ice_candidate',
+                    candidate: e.candidate
+                });
+            }
+        };
+        pc.ontrack = (e) => {
+            if (!remoteAudiosRef.current?.querySelector(`[data-socket-id="${targetId}"]`)) {
+                const remoteAudio = document.createElement('audio');
+                remoteAudio.srcObject = e.streams[0];
+                remoteAudio.autoplay = true;
+                remoteAudio.setAttribute('data-socket-id', targetId);
+                remoteAudiosRef.current?.appendChild(remoteAudio);
+            }
+        };
+        localStreamRef.current?.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current!));
+        return pc;
+    };
+
+    const handleGroupCallSignal = async (data: { senderId: string, type: string, [key: string]: any }) => {
+        // FIX: Create a peer connection if one doesn't exist for the sender (for the peer receiving the offer)
+        let pc = peerConnectionsRef.current.get(data.senderId);
+        if (data.type === 'offer' && !pc) {
+            console.log(`Accepting offer and creating peer connection to ${data.senderId}`);
+            pc = createGroupPeerConnection(data.senderId);
+            peerConnectionsRef.current.set(data.senderId, pc);
+        }
+        
+        if (!pc) return;
+
+        switch (data.type) {
+            case 'offer':
+                await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                sendMessage('group_call_signal', {
+                    targetId: data.senderId,
+                    type: 'answer',
+                    answer: pc.localDescription
+                });
+                break;
+            case 'answer':
+                await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                break;
+            case 'ice_candidate':
+                // FIX: Add a guard to prevent adding ICE candidates before the remote description is set
+                if (pc.remoteDescription) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+                break;
+        }
+    };
+
+    const handleStartGroupCall = async () => {
+        if (isInGroupCall) return;
+        try {
+            localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+            setIsInGroupCall(true);
+            sendMessage('join_group_call', {});
+        } catch (err) {
+            console.error("Error starting group call:", err);
+        }
+    };
+
+    const handleHangUpGroupCall = () => {
+        sendMessage('leave_group_call', {});
+        cleanupCall(true);
     };
 
     if (!isMounted) return null;
-
     if (!currentUser) { return <LoginPage onLogin={connectSocket} />; }
 
     const socketContextValue: SocketContextType = { socket: socketRef.current, currentUser, users, sendMessage };
@@ -701,10 +847,18 @@ const App: FC = () => {
         <SocketProvider value={socketContextValue}>
             <div className="h-screen w-screen flex text-white bg-gray-900 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]">
                 <UserList onSelectChat={(id, name) => setSelectedChat({ id, name })} selectedChatId={selectedChat.id} onLogout={handleLogout} />
-                <ChatWindow selectedChat={selectedChat} onStartCall={handleStartCall} initialHistory={initialHistory} />
+                <ChatWindow 
+                    selectedChat={selectedChat} 
+                    onStartCall={handleStartCall} 
+                    onStartGroupCall={handleStartGroupCall} 
+                    initialHistory={initialHistory} 
+                />
+                
                 {incomingCall && <IncomingCallModal callerName={incomingCall.sender.name} onAccept={handleAcceptCall} onReject={handleRejectCall} />}
                 {isCalling && callee && <InCallModal calleeName={callee.name} onHangUp={handleHangUp} localStream={localStreamRef.current} />}
-                <audio ref={remoteAudioRef} autoPlay />
+                {isInGroupCall && <InCallModal calleeName="General Room" onHangUp={handleHangUpGroupCall} localStream={localStreamRef.current} />}
+                
+                <div ref={remoteAudiosRef}></div>
             </div>
         </SocketProvider>
     );
