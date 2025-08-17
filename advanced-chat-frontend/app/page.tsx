@@ -24,9 +24,9 @@ interface User {
 
 interface Message {
   text?: string;
-  file?: { name: string; url: string; data: string }; // Added 'data' for file content
+  file?: { name: string; url: string; data: string };
   sender: User;
-  target: 'general' | string; // 'general' or a user ID
+  target: 'general' | string;
   timestamp: string;
   isMe: boolean;
 }
@@ -167,7 +167,7 @@ const MessageContent: FC<{ text: string }> = ({ text }) => {
             return res.json();
           })
           .then(data => {
-            if (data && (data.title || data.image)) {
+            if (data && (data.title || data.image || data.audioUrl)) {
               setPreview(data);
             }
           })
@@ -194,8 +194,11 @@ const MessageContent: FC<{ text: string }> = ({ text }) => {
                 </div>
               )}
               {preview && !isLoading && (
-                 <a href={preview.url} target="_blank" rel="noopener noreferrer" className="mt-2 bg-gray-800 rounded-lg border border-gray-700 max-w-xs block hover:bg-gray-700/50 overflow-hidden">
+                 <div className="mt-2 bg-gray-800 rounded-lg border border-gray-700 max-w-xs overflow-hidden">
                   {preview.image && <img src={preview.image} alt={preview.title || 'Link preview'} className="w-full object-cover max-h-40" />}
+                  {preview.audioUrl && (
+                    <audio controls src={preview.audioUrl} className="w-full h-12" />
+                  )}
                   <div className="p-3">
                     <div className="flex items-center text-gray-400">
                       {preview.contentType?.startsWith('audio/') ? <Music size={16} className="mr-2 flex-shrink-0" /> : <Link2 size={16} className="mr-2 flex-shrink-0" />}
@@ -204,7 +207,7 @@ const MessageContent: FC<{ text: string }> = ({ text }) => {
                     {preview.title && <p className="text-sm font-bold text-white mt-1 line-clamp-2">{preview.title}</p>}
                     {preview.description && <p className="text-xs text-gray-400 mt-1 line-clamp-2">{preview.description}</p>}
                   </div>
-                </a>
+                </div>
               )}
             </React.Fragment>
           );
@@ -233,10 +236,10 @@ const ChatMessage: FC<{ msg: Message }> = ({ msg }) => {
   );
 };
 
-const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: () => void }> = ({ selectedChat, onStartCall }) => {
+const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: () => void, initialHistory: Record<string, Message[]> }> = ({ selectedChat, onStartCall, initialHistory }) => {
   const { sendMessage, currentUser, users } = useSocket();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [chatHistory, setChatHistory] = useState<Record<string, Message[]>>({ general: [] });
+  const [chatHistory, setChatHistory] = useState(initialHistory);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { socket } = useSocket();
@@ -257,6 +260,14 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
         return () => socket.removeEventListener('message', handleNewMessage);
     }
   }, [socket]);
+  
+  // Real-time saving to localStorage
+  useEffect(() => {
+    if (currentUser && Object.keys(chatHistory).length > 0) {
+      const encryptedHistory = encrypt(JSON.stringify(chatHistory));
+      localStorage.setItem(`chat_history_${currentUser.id}`, encryptedHistory);
+    }
+  }, [chatHistory, currentUser]);
 
   useEffect(() => { setMessages(chatHistory[selectedChat.id] || []); }, [selectedChat, chatHistory]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -292,7 +303,7 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
       setChatHistory(prev => ({ ...prev, [selectedChat.id]: [...(prev[selectedChat.id] || []), newMsg] }));
     };
     reader.readAsDataURL(file);
-    e.target.value = ''; // Reset input
+    e.target.value = '';
   };
 
 
@@ -438,8 +449,25 @@ const App: FC = () => {
     const localStreamRef = useRef<MediaStream | null>(null);
     const remoteAudioRef = useRef<HTMLAudioElement>(null);
     const [isMounted, setIsMounted] = useState(false);
+    const [initialHistory, setInitialHistory] = useState<Record<string, Message[]>>({ general: [] });
 
-    useEffect(() => { setIsMounted(true); }, []);
+    useEffect(() => {
+        setIsMounted(true);
+        // Load history from localStorage on initial mount
+        const userId = localStorage.getItem('chat_user_id');
+        if (userId) {
+            const encryptedHistory = localStorage.getItem(`chat_history_${userId}`);
+            if (encryptedHistory) {
+                try {
+                    const decrypted = decrypt(encryptedHistory);
+                    setInitialHistory(JSON.parse(decrypted));
+                } catch (e) {
+                    console.error("Could not load history", e);
+                    localStorage.removeItem(`chat_history_${userId}`);
+                }
+            }
+        }
+    }, []);
 
     const cleanupCall = () => {
       if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
@@ -456,7 +484,10 @@ const App: FC = () => {
         ws.onmessage = (event) => {
             const { event: msgEvent, data } = JSON.parse(event.data);
             switch (msgEvent) {
-                case 'login_success': setCurrentUser(data.user); break;
+                case 'login_success': 
+                    setCurrentUser(data.user);
+                    localStorage.setItem('chat_user_id', data.user.id);
+                    break;
                 case 'user_list_update': setUsers(data.users); break;
                 case 'webrtc_signal': handleSignaling(data); break;
                 case 'target_busy': alert(`${data.name} is currently in another call.`); break;
@@ -468,7 +499,10 @@ const App: FC = () => {
         socketRef.current = ws;
     };
 
-    const handleLogout = () => { socketRef.current?.close(); };
+    const handleLogout = () => {
+      socketRef.current?.close();
+      localStorage.removeItem('chat_user_id');
+    };
     const sendMessage = (type: string, payload: any) => { socketRef.current?.send(JSON.stringify({ event: type, data: payload })); };
 
     const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -551,7 +585,7 @@ const App: FC = () => {
         <SocketProvider value={socketContextValue}>
             <div className="h-screen w-screen flex text-white bg-gray-900 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]">
                 <UserList onSelectChat={(id, name) => setSelectedChat({ id, name })} selectedChatId={selectedChat.id} onLogout={handleLogout} />
-                <ChatWindow selectedChat={selectedChat} onStartCall={handleStartCall} />
+                <ChatWindow selectedChat={selectedChat} onStartCall={handleStartCall} initialHistory={initialHistory} />
                 {incomingCall && <IncomingCallModal callerName={incomingCall.sender.name} onAccept={handleAcceptCall} onReject={handleRejectCall} />}
                 {isCalling && callee && <InCallModal calleeName={callee.name} onHangUp={handleHangUp} localStream={localStreamRef.current} />}
                 <audio ref={remoteAudioRef} autoPlay />
