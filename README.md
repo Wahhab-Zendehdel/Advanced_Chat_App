@@ -75,8 +75,8 @@ The frontend application will be accessible at `https://localhost:10000`.
 
 ## Stay in touch
 
--   Author - [Your Name](https://your-website.com)
--   GitHub - [@your-username](https://github.com/your-username)
+-   Author - [Wahhab-Zendehdel](https://wahhab-zendehdel.github.io)
+-   GitHub - [@Wahhab-Zendehdel](https://github.com/Wahhab-Zendehdel)
 
 ## License
 
