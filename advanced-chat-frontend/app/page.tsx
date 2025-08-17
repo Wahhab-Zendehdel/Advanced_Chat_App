@@ -12,12 +12,8 @@
 
 import React, { useState, useEffect, useRef, createContext, useContext, FC, ReactNode } from 'react';
 import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, User, Users, LogOut, Mic, MicOff, Link2, Music, Smile, Trash2, Edit } from 'lucide-react';
-import type { EmojiClickData } from 'emoji-picker-react';
-import dynamic from 'next/dynamic';
-import { Theme } from 'emoji-picker-react';
-
-const CryptoJS = require('crypto-js');
-const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
+import * as CryptoJS from 'crypto-js';
+import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 
 
 // --- TYPES AND INTERFACES ---
@@ -290,7 +286,7 @@ const ChatWindow: FC<{ selectedChat: { id: string, name: string }, onStartCall: 
   const emojiMap: { [key: string]: string } = {
     ':)': '😊', ':-)': '😊',
     ':D': '😀', ':-D': '😀',
-    ':(': '😞', ':-(': '�',
+    ':(': '😞', ':-(': '?',
     ':O': '😮', ':-O': '😮',
     '<3': '❤️',
     ':P': '😛', ':-P': '😛',
