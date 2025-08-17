@@ -2,7 +2,18 @@
 
 ## Description
 
-This is a full-stack chat application built with a **NestJS** backend and a **Next.js** frontend. It provides real-time messaging capabilities, user authentication, and a modern, responsive user interface.
+This is a full-stack chat application built with a **NestJS** backend and a **Next.js** frontend. It provides real-time messaging capabilities, user authentication, and a modern, responsive user interface, all running on a secure local network.
+
+## Features
+
+-   **Real-Time Messaging**: Instant text communication in a general room or in private one-on-one chats.
+-   **End-to-End Encryption**: All messages and files are encrypted using AES, ensuring that only the sender and recipient can view the content.
+-   **User Presence**: See the status of other users in real-time (e.g., 'online' or 'busy').
+-   **Secure File Sharing**: Share files up to 5MB directly within chats, with the same end-to-end encryption as text messages.
+-   **WebRTC Voice Calls**: Initiate secure, peer-to-peer voice calls with other users. The application handles call signaling, busy status, and call termination.
+-   **Link Previews**: Automatically generates previews for links shared in messages, including YouTube videos.
+-   **Audio Visualizer**: An in-call audio visualizer provides feedback on your microphone activity.
+-   **Secure Local Hosting**: Both frontend and backend run on HTTPS, ensuring a secure connection within your local network.
 
 ## Installation
 
@@ -43,7 +54,7 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
-The backend server will be running on `http://localhost:3000`.
+The backend server will be running on `https://localhost:3001`.
 
 ### Frontend (Next.js)
 
@@ -60,7 +71,7 @@ $ npm run build
 $ npm run start
 ```
 
-The frontend application will be accessible at `http://localhost:3001` (or another port if 3000 is in use).
+The frontend application will be accessible at `https://localhost:10000`.
 
 ## Stay in touch
 
