@@ -21,7 +21,7 @@ Before you begin, ensure you have Node.js and npm installed on your system.
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/your-username/advanced_chat_app.git](https://github.com/your-username/advanced_chat_app.git)
+    git clone [https://github.com/Wahhab-Zendehdel/advanced_chat_app.git](https://github.com/Wahhab-Zendehdel/advanced_chat_app.git)
     cd advanced_chat_app
     ```
 
