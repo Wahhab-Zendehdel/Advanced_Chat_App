@@ -11,6 +11,7 @@ import {
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
+import { NotificationService } from './notification.service';
 
 interface User {
   id: string;
@@ -27,6 +28,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   
   // Keep track of which users are in the group call
   private groupCallUsers = new Set<string>();
+
+  constructor(private readonly notificationService: NotificationService) {}
 
   handleConnection(client: WebSocket) {
     this.logger.log('Client connected');
@@ -69,6 +72,91 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.broadcastUserList();
     this.broadcastGroupCallUpdate();
   }
+
+  // --- FIX: Re-added Message Handlers ---
+
+  @SubscribeMessage('general_message')
+  handleGeneralMessage(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { payload: string }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+
+    const message = JSON.stringify({
+      event: 'new_message',
+      data: {
+        payload: payload.payload,
+        sender: { id: sender.id, name: sender.name },
+        target: 'general',
+      },
+    });
+
+    this.users.forEach(user => {
+      if (user.ws !== client) {
+        user.ws.send(message);
+        this.notificationService.sendNotification(user.ws, 'New General Message', `${sender.name} sent a message in the general room.`);
+      }
+    });
+  }
+
+  @SubscribeMessage('private_message')
+  handlePrivateMessage(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string, payload: string }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+
+    const target = this.users.get(payload.targetId);
+    if (target) {
+      const message = JSON.stringify({
+        event: 'new_message',
+        data: {
+          payload: payload.payload,
+          sender: { id: sender.id, name: sender.name },
+          target: sender.id, 
+        },
+      });
+      target.ws.send(message);
+      this.notificationService.sendNotification(target.ws, 'New Private Message', `You have a new message from ${sender.name}.`);
+    }
+  }
+
+  @SubscribeMessage('file_message_general')
+  handleFileMessageGeneral(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { payload: string }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+    const message = JSON.stringify({
+      event: 'new_file_message',
+      data: {
+        payload: payload.payload,
+        sender: { id: sender.id, name: sender.name },
+        target: 'general',
+      },
+    });
+    this.users.forEach(user => {
+      if (user.ws !== client) {
+        user.ws.send(message);
+        this.notificationService.sendNotification(user.ws, 'New File in General', `${sender.name} sent a file in the general room.`);
+      }
+    });
+  }
+  
+  @SubscribeMessage('file_message_private')
+  handleFileMessagePrivate(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string, payload: string }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+    const target = this.users.get(payload.targetId);
+    if (target) {
+      const message = JSON.stringify({
+        event: 'new_file_message',
+        data: {
+          payload: payload.payload,
+          sender: { id: sender.id, name: sender.name },
+          target: sender.id,
+        },
+      });
+      target.ws.send(message);
+      this.notificationService.sendNotification(target.ws, 'New Private File', `${sender.name} sent you a file.`);
+    }
+  }
+  
+  // --- Call Logic ---
 
   @SubscribeMessage('webrtc_signal')
   handleWebrtcSignal(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { targetId: string; type: string; [key: string]: any }): void {

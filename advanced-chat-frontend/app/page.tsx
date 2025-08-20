@@ -11,7 +11,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, createContext, useContext, FC, ReactNode } from 'react';
-import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, User, Users, LogOut, Mic, MicOff, Link2, Music, Smile, Trash2, Edit } from 'lucide-react';
+import { Phone, PhoneIncoming, PhoneOff, Send, Paperclip, User, Users, LogOut, Mic, MicOff, Link2, Music, Smile, Trash2, Edit, Bell, BellOff } from 'lucide-react';
 import * as CryptoJS from 'crypto-js';
 import EmojiPicker, { type EmojiClickData, Theme } from 'emoji-picker-react';
 
@@ -94,12 +94,31 @@ const LoginPage: FC<{ onLogin: (name: string) => void }> = ({ onLogin }) => {
   );
 };
 
-const UserList: FC<{ onSelectChat: (id: string, name: string) => void; selectedChatId: string; onLogout: () => void }> = ({ onSelectChat, selectedChatId, onLogout }) => {
+const UserList: FC<{ onSelectChat: (id: string, name: string) => void; selectedChatId: string; onLogout: () => void; notificationPermission: NotificationPermission; requestNotificationPermission: () => void; }> = ({ onSelectChat, selectedChatId, onLogout, notificationPermission, requestNotificationPermission }) => {
   const { users, currentUser } = useSocket();
 
   const StatusIndicator: FC<{ status: 'online' | 'busy' }> = ({ status }) => (
     <span className={`w-3 h-3 rounded-full mr-3 ${status === 'online' ? 'bg-green-500' : 'bg-red-500'}`} />
   );
+
+  const getNotificationStatus = () => {
+    switch(notificationPermission) {
+      case 'granted':
+        return <span className="flex items-center text-green-400"><Bell size={14} className="mr-1"/> Enabled</span>;
+      case 'denied':
+        return (
+          <span className="flex items-center text-red-400">
+            <BellOff size={14} className="mr-1"/> Blocked
+          </span>
+        );
+      default:
+        return (
+          <button onClick={requestNotificationPermission} className="flex items-center text-yellow-400 hover:text-yellow-300">
+             Enable Notifications
+          </button>
+        );
+    }
+  };
 
   return (
     <div className="w-1/4 bg-gray-800/50 backdrop-blur-sm p-4 flex flex-col border-r border-gray-700/50">
@@ -126,6 +145,7 @@ const UserList: FC<{ onSelectChat: (id: string, name: string) => void; selectedC
          <h3 className="text-lg font-semibold text-white mb-2">My Info</h3>
          <p className="text-sm text-gray-400 truncate">Name: <span className="font-mono">{currentUser?.name}</span></p>
          <p className="text-sm text-gray-400 truncate">ID: <span className="font-mono">{currentUser?.id}</span></p>
+         <div className="text-sm text-gray-400 flex items-center">Notifications:&nbsp;{getNotificationStatus()}</div>
          <button onClick={onLogout} className="w-full mt-4 flex items-center justify-center py-2 px-4 bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
             <LogOut size={16} className="mr-2"/> Logout
          </button>
@@ -234,6 +254,9 @@ const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void
   return (
     <div className={`group flex items-end gap-2 mb-4 ${msg.isMe ? 'flex-row-reverse' : ''}`}>
       <div className={`max-w-lg p-3 rounded-xl ${bubbleClass} break-words`}>
+        {!msg.isMe && msg.target === 'general' && (
+            <p className="text-xs font-bold text-blue-300 mb-1">{msg.sender.name}</p>
+        )}
         {isEditing ? (
           <div>
             <input 
@@ -279,6 +302,7 @@ const ChatWindow: FC<{
 }> = ({ selectedChat, onStartCall, onStartGroupCall, initialHistory }) => {
   const { sendMessage, currentUser, users } = useSocket();
   const [messages, setMessages] = useState<Message[]>([]);
+  // FIX: Initialize chat history from the prop, which is now always empty on start.
   const [chatHistory, setChatHistory] = useState(initialHistory);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const messageInputRef = useRef<HTMLInputElement>(null);
@@ -344,13 +368,6 @@ const ChatWindow: FC<{
     }
   }, [socket]);
   
-  useEffect(() => {
-    if (currentUser && Object.keys(chatHistory).length > 0) {
-      const encryptedHistory = encrypt(JSON.stringify(chatHistory));
-      localStorage.setItem(`chat_history_${currentUser.id}`, encryptedHistory);
-    }
-  }, [chatHistory, currentUser]);
-
   useEffect(() => { setMessages(chatHistory[selectedChat.id] || []); }, [selectedChat, chatHistory]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -459,7 +476,7 @@ const ChatWindow: FC<{
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
           <button type="button" onClick={() => fileInputRef.current?.click()} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Paperclip /></button>
           <button type="button" onClick={() => setShowEmojiPicker(p => !p)} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Smile /></button>
-          <input ref={messageInputRef} name="message" placeholder="Type an encrypted message..." className="flex-grow bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input ref={messageInputRef} name="message" placeholder="Type an encrypted message..." className="flex-grow bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" autoComplete="off" />
           <button type="submit" className="p-3 bg-blue-600 hover:bg-blue-700 rounded-full transition-colors"><Send /></button>
         </form>
       </footer>
@@ -571,7 +588,7 @@ const App: FC = () => {
     const [users, setUsers] = useState<User[]>([]);
     const [selectedChat, setSelectedChat] = useState({ id: 'general', name: 'General Room' });
     const [isMounted, setIsMounted] = useState(false);
-    const [initialHistory, setInitialHistory] = useState<Record<string, Message[]>>({ general: [] });
+    const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
     
     // 1-on-1 call states
     const [incomingCall, setIncomingCall] = useState<{ sender: User; offer: any } | null>(null);
@@ -589,21 +606,28 @@ const App: FC = () => {
     const socketRef = useRef<WebSocket | null>(null);
     const remoteAudiosRef = useRef<HTMLDivElement>(null);
     
+    const requestNotificationPermission = () => {
+      if ("Notification" in window && Notification.permission === 'default') {
+        Notification.requestPermission().then(permission => {
+          setNotificationPermission(permission);
+        });
+      }
+    };
+
     useEffect(() => {
-        setIsMounted(true);
-        const userId = localStorage.getItem('chat_user_id');
-        if (userId) {
-            const encryptedHistory = localStorage.getItem(`chat_history_${userId}`);
-            if (encryptedHistory) {
-                try {
-                    const decrypted = decrypt(encryptedHistory);
-                    setInitialHistory(JSON.parse(decrypted));
-                } catch (e) {
-                    console.error("Could not load history", e);
-                    localStorage.removeItem(`chat_history_${userId}`);
-                }
-            }
-        }
+      setIsMounted(true);
+      if ('Notification' in window && 'permissions' in navigator) {
+        navigator.permissions.query({ name: 'notifications' }).then((permissionStatus) => {
+          const permissionState = permissionStatus.state === 'prompt' ? 'default' : permissionStatus.state;
+          setNotificationPermission(permissionState);
+          permissionStatus.onchange = () => {
+            const updatedPermissionState = permissionStatus.state === 'prompt' ? 'default' : permissionStatus.state;
+            setNotificationPermission(updatedPermissionState);
+          };
+        });
+      } else if ('Notification' in window) {
+        setNotificationPermission(Notification.permission);
+      }
     }, []);
 
     const cleanupCall = (isGroupCall = false) => {
@@ -622,7 +646,6 @@ const App: FC = () => {
         localStreamRef.current?.getTracks().forEach(track => track.stop());
         localStreamRef.current = null;
         
-        // Clear all audio elements
         if (remoteAudiosRef.current) {
             remoteAudiosRef.current.innerHTML = '';
         }
@@ -632,21 +655,27 @@ const App: FC = () => {
 
     const connectSocket = (name: string) => {
         const ws = new WebSocket(`wss://${window.location.hostname}:3001`);
-        ws.onopen = () => { ws.send(JSON.stringify({ event: 'login', data: { name } })); };
+        ws.onopen = () => { 
+          ws.send(JSON.stringify({ event: 'login', data: { name } })); 
+        };
         ws.onmessage = (event) => {
             const { event: msgEvent, data } = JSON.parse(event.data);
             switch (msgEvent) {
                 case 'login_success': 
                     setCurrentUser(data.user);
-                    localStorage.setItem('chat_user_id', data.user.id);
                     break;
                 case 'user_list_update': setUsers(data.users); break;
                 case 'webrtc_signal': handleSignaling(data); break;
                 case 'target_busy': alert(`${data.name} is currently in another call.`); cleanupCall(); break;
                 case 'call_ended': cleanupCall(); break;
-                // Group Call Events
                 case 'group_call_update': setGroupCallUsers(data.users); break;
                 case 'group_call_signal': handleGroupCallSignal(data); break;
+                case 'notification':
+                  console.log('Notification event received:', data);
+                  if (Notification.permission === "granted" && !document.hasFocus()) {
+                    new Notification(data.title, { body: data.body });
+                  }
+                  break;
             }
         };
         ws.onclose = () => { setCurrentUser(null); socketRef.current = null; };
@@ -654,15 +683,12 @@ const App: FC = () => {
         socketRef.current = ws;
     };
     
-    // Effect to manage group call connections
     useEffect(() => {
         if (!isInGroupCall || !currentUser) return;
 
         const otherUsersInCall = groupCallUsers.filter(id => id !== currentUser.id);
         
-        // Connect to new users
         for (const userId of otherUsersInCall) {
-            // FIX: Only the user with the lexicographically smaller ID initiates the offer
             if (!peerConnectionsRef.current.has(userId) && currentUser.id < userId) {
                 console.log(`Creating offer for ${userId}`);
                 const pc = createGroupPeerConnection(userId);
@@ -680,7 +706,6 @@ const App: FC = () => {
             }
         }
 
-        // Disconnect from users who left
         peerConnectionsRef.current.forEach((pc, userId) => {
             if (!otherUsersInCall.includes(userId)) {
                 console.log(`Closing peer connection to ${userId}`);
@@ -694,7 +719,6 @@ const App: FC = () => {
 
     const handleLogout = () => {
       socketRef.current?.close();
-      localStorage.removeItem('chat_user_id');
     };
     
     const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -763,7 +787,6 @@ const App: FC = () => {
       cleanupCall();
     };
     
-    // --- New Group Call Logic ---
     const createGroupPeerConnection = (targetId: string) => {
         const pc = new RTCPeerConnection(rtcConfig);
         pc.onicecandidate = (e) => {
@@ -789,7 +812,6 @@ const App: FC = () => {
     };
 
     const handleGroupCallSignal = async (data: { senderId: string, type: string, [key: string]: any }) => {
-        // FIX: Create a peer connection if one doesn't exist for the sender (for the peer receiving the offer)
         let pc = peerConnectionsRef.current.get(data.senderId);
         if (data.type === 'offer' && !pc) {
             console.log(`Accepting offer and creating peer connection to ${data.senderId}`);
@@ -814,7 +836,6 @@ const App: FC = () => {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 break;
             case 'ice_candidate':
-                // FIX: Add a guard to prevent adding ICE candidates before the remote description is set
                 if (pc.remoteDescription) {
                     await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
                 }
@@ -846,12 +867,19 @@ const App: FC = () => {
     return (
         <SocketProvider value={socketContextValue}>
             <div className="h-screen w-screen flex text-white bg-gray-900 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]">
-                <UserList onSelectChat={(id, name) => setSelectedChat({ id, name })} selectedChatId={selectedChat.id} onLogout={handleLogout} />
+                <UserList 
+                    onSelectChat={(id, name) => setSelectedChat({ id, name })} 
+                    selectedChatId={selectedChat.id} 
+                    onLogout={handleLogout}
+                    notificationPermission={notificationPermission}
+                    requestNotificationPermission={requestNotificationPermission}
+                />
                 <ChatWindow 
                     selectedChat={selectedChat} 
                     onStartCall={handleStartCall} 
                     onStartGroupCall={handleStartGroupCall} 
-                    initialHistory={initialHistory} 
+                    // FIX: Pass an empty object for initialHistory
+                    initialHistory={{}} 
                 />
                 
                 {incomingCall && <IncomingCallModal callerName={incomingCall.sender.name} onAccept={handleAcceptCall} onReject={handleRejectCall} />}
