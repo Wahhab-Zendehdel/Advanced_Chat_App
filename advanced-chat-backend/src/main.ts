@@ -1,3 +1,4 @@
+// src/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -5,15 +6,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 async function bootstrap() {
-  // Make sure your .pem files are in the root of the backend project
+  // Use the new certificate files for SARI.chat
   const httpsOptions = {
-    key: fs.readFileSync(path.join(__dirname, '..', 'localhost+3-key.pem')),
-    cert: fs.readFileSync(path.join(__dirname, '..', 'localhost+3.pem')),
+    key: fs.readFileSync(path.join(__dirname, '..', 'SARI.chat-key.pem')), // <-- UPDATE THIS
+    cert: fs.readFileSync(path.join(__dirname, '..', 'SARI.chat.pem')),    // <-- UPDATE THIS
   };
 
   const app = await NestFactory.create(AppModule, { httpsOptions });
 
-  app.enableCors(); // <-- ADD THIS LINE to allow requests from the frontend
+  app.enableCors();
   app.useWebSocketAdapter(new WsAdapter(app));
   
   await app.listen(3001);

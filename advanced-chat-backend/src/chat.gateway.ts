@@ -73,7 +73,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.broadcastGroupCallUpdate();
   }
 
-  // --- FIX: Re-added Message Handlers ---
+  // --- Message Handlers ---
 
   @SubscribeMessage('general_message')
   handleGeneralMessage(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { payload: string }): void {
@@ -154,6 +154,65 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       target.ws.send(message);
       this.notificationService.sendNotification(target.ws, 'New Private File', `${sender.name} sent you a file.`);
     }
+  }
+  
+  @SubscribeMessage('edit_message')
+  handleEditMessage(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { messageId: string, newText: string, target: string }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+
+    const message = JSON.stringify({
+      event: 'message_edited',
+      data: { messageId: payload.messageId, newText: payload.newText, target: payload.target },
+    });
+
+    if (payload.target === 'general') {
+      this.users.forEach(user => {
+        if (user.ws !== client) {
+            user.ws.send(message);
+        }
+      });
+    } else {
+      const targetUser = this.users.get(payload.target);
+      if (targetUser) {
+        targetUser.ws.send(message);
+      }
+    }
+  }
+
+  @SubscribeMessage('delete_message')
+  handleDeleteMessage(@ConnectedSocket() client: WebSocket, @MessageBody() payload: { messageId: string; target: string; deleteType: 'everyone' | 'me' }): void {
+    const sender = this.findUserByWs(client);
+    if (!sender) return;
+
+    // Only broadcast if the sender wants to delete for everyone
+    if (payload.deleteType === 'everyone') {
+      const message = JSON.stringify({
+        event: 'message_deleted',
+        data: { messageId: payload.messageId, target: payload.target },
+      });
+
+      if (payload.target === 'general') {
+        // Broadcast to all users for a general message
+        this.users.forEach(user => user.ws.send(message));
+      } else {
+        const targetUser = this.users.get(payload.target);
+        // Send deletion confirmation back to the sender
+        sender.ws.send(JSON.stringify({
+            event: 'message_deleted',
+            data: { messageId: payload.messageId, target: payload.target },
+        }));
+        // If the target user exists, send them a specific deletion event
+        if (targetUser) {
+            const messageToTarget = JSON.stringify({
+                event: 'message_deleted',
+                data: { messageId: payload.messageId, target: sender.id },
+            });
+            targetUser.ws.send(messageToTarget);
+        }
+      }
+    }
+    // No backend action is needed for 'delete for me' as it's handled client-side
   }
   
   // --- Call Logic ---

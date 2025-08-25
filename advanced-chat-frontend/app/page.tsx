@@ -1,12 +1,4 @@
-// To run this:
-// 1. Create a new Next.js project: npx create-next-app@latest advanced-chat-frontend
-// 2. Choose TypeScript and Tailwind CSS during setup.
-// 3. cd advanced-chat-frontend
-// 4. Install dependencies: npm i lucide-react crypto-js @types/crypto-js emoji-picker-react
-// 5. Replace the content of app/page.tsx with this entire code block.
-// 6. Create the next.config.js file as described in the setup guide.
-// 7. Make sure your NestJS backend is running.
-// 8. Run the frontend: npm run dev
+// app/page.tsx
 
 'use client';
 
@@ -241,15 +233,50 @@ const MessageContent: FC<{ text: string }> = ({ text }) => {
 };
 
 
-const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void; onDelete: (id: string) => void; }> = ({ msg, onEdit, onDelete }) => {
+const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void; onDelete: (id: string, deleteType: 'me' | 'everyone') => void; }> = ({ msg, onEdit, onDelete }) => {
   const bubbleClass = msg.isMe ? 'bg-blue-600 self-end' : 'bg-gray-700 self-start';
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.text || '');
+  const [showDeleteOptions, setShowDeleteOptions] = useState(false);
+  const [isMenuAbove, setIsMenuAbove] = useState(true);
+  const deleteOptionsRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLDivElement>(null);
 
   const handleSaveEdit = () => {
     onEdit(msg.id, editText);
     setIsEditing(false);
   };
+
+  const handleDeleteRequest = (deleteType: 'me' | 'everyone') => {
+    onDelete(msg.id, deleteType);
+    setShowDeleteOptions(false);
+  }
+
+  const handleDeleteClick = () => {
+    if (menuTriggerRef.current) {
+        const rect = menuTriggerRef.current.getBoundingClientRect();
+        // If the menu trigger is too close to the top of the viewport, show the menu below
+        if (rect.top < 150) { 
+            setIsMenuAbove(false);
+        } else {
+            setIsMenuAbove(true);
+        }
+    }
+    setShowDeleteOptions(prev => !prev);
+  }
+
+  // Effect to handle clicks outside the delete options menu
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (deleteOptionsRef.current && !deleteOptionsRef.current.contains(event.target as Node)) {
+        setShowDeleteOptions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [deleteOptionsRef]);
 
   return (
     <div className={`group flex items-end gap-2 mb-4 ${msg.isMe ? 'flex-row-reverse' : ''}`}>
@@ -259,9 +286,9 @@ const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void
         )}
         {isEditing ? (
           <div>
-            <input 
-              type="text" 
-              value={editText} 
+            <input
+              type="text"
+              value={editText}
               onChange={(e) => setEditText(e.target.value)}
               className="w-full bg-gray-900/50 p-2 rounded"
               onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit()}
@@ -284,10 +311,19 @@ const ChatMessage: FC<{ msg: Message; onEdit: (id: string, text: string) => void
           </>
         )}
       </div>
-      {msg.isMe && !isEditing && msg.text && (
-        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={() => setIsEditing(true)} className="p-1 text-gray-400 hover:text-white"><Edit size={14} /></button>
-          <button onClick={() => onDelete(msg.id)} className="p-1 text-gray-400 hover:text-white"><Trash2 size={14} /></button>
+      {msg.isMe && !isEditing && (msg.text || msg.file) && (
+        <div ref={menuTriggerRef} className="relative flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {msg.text && <button onClick={() => setIsEditing(true)} className="p-1 text-gray-400 hover:text-white"><Edit size={14} /></button>}
+          <button onClick={handleDeleteClick} className="p-1 text-gray-400 hover:text-white"><Trash2 size={14} /></button>
+          { showDeleteOptions &&
+            <div ref={deleteOptionsRef} className={`absolute right-0 w-48 bg-gray-800 rounded-md shadow-lg z-10 border border-gray-700 ${isMenuAbove ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
+                <p className="text-sm text-white p-2 border-b border-gray-700">Delete message?</p>
+                <div className="flex flex-col p-1">
+                    <button onClick={() => handleDeleteRequest('me')} className="text-sm text-left text-white p-2 hover:bg-gray-700 rounded-md">Delete for me</button>
+                    <button onClick={() => handleDeleteRequest('everyone')} className="text-sm text-left text-red-400 p-2 hover:bg-gray-700 rounded-md">Delete for everyone</button>
+                </div>
+            </div>
+          }
         </div>
       )}
     </div>
@@ -302,7 +338,6 @@ const ChatWindow: FC<{
 }> = ({ selectedChat, onStartCall, onStartGroupCall, initialHistory }) => {
   const { sendMessage, currentUser, users } = useSocket();
   const [messages, setMessages] = useState<Message[]>([]);
-  // FIX: Initialize chat history from the prop, which is now always empty on start.
   const [chatHistory, setChatHistory] = useState(initialHistory);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const messageInputRef = useRef<HTMLInputElement>(null);
@@ -314,8 +349,8 @@ const ChatWindow: FC<{
   const emojiMap: { [key: string]: string } = {
     ':)': '😊', ':-)': '😊',
     ':D': '😀', ':-D': '😀',
-    ':(': '😞', ':-(': '?',
-    ':O': '😮', ':-O': '😮',
+    ':(': '😞', ':-(': '😞',
+    ':O': '😮', ':-O': '�',
     '<3': '❤️',
     ':P': '😛', ':-P': '😛',
     ';)': '😉', ';-)': '😉',
@@ -422,15 +457,18 @@ const ChatWindow: FC<{
     });
   };
 
-  const handleDeleteMessage = (messageId: string) => {
-    if (window.confirm("Are you sure you want to delete this message?")) {
-      sendMessage('delete_message', { messageId, target: selectedChat.id });
-      setChatHistory(prev => {
-        const newHistory = { ...prev };
-        newHistory[selectedChat.id] = (newHistory[selectedChat.id] || []).filter(m => m.id !== messageId);
-        return newHistory;
-      });
+  const handleDeleteMessage = (messageId: string, deleteType: 'me' | 'everyone') => {
+    // If deleting for everyone, notify the server.
+    if (deleteType === 'everyone') {
+      sendMessage('delete_message', { messageId, target: selectedChat.id, deleteType });
     }
+    
+    // For both 'me' and 'everyone', we immediately remove the message from the local state for a responsive UI.
+    setChatHistory(prev => {
+      const newHistory = { ...prev };
+      newHistory[selectedChat.id] = (newHistory[selectedChat.id] || []).filter(m => m.id !== messageId);
+      return newHistory;
+    });
   };
 
   const onEmojiClick = (emojiData: EmojiClickData) => {
@@ -472,7 +510,7 @@ const ChatWindow: FC<{
             <EmojiPicker onEmojiClick={onEmojiClick} theme={Theme.DARK} />
           </div>
         )}
-        <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(e.currentTarget.message.value); e.currentTarget.reset(); }} className="flex items-center space-x-4">
+        <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(e.currentTarget.message.value); e.currentTarget.reset(); setShowEmojiPicker(false); }} className="flex items-center space-x-4">
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
           <button type="button" onClick={() => fileInputRef.current?.click()} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Paperclip /></button>
           <button type="button" onClick={() => setShowEmojiPicker(p => !p)} className="p-3 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors"><Smile /></button>
@@ -671,7 +709,6 @@ const App: FC = () => {
                 case 'group_call_update': setGroupCallUsers(data.users); break;
                 case 'group_call_signal': handleGroupCallSignal(data); break;
                 case 'notification':
-                  console.log('Notification event received:', data);
                   if (Notification.permission === "granted" && !document.hasFocus()) {
                     new Notification(data.title, { body: data.body });
                   }
@@ -690,7 +727,6 @@ const App: FC = () => {
         
         for (const userId of otherUsersInCall) {
             if (!peerConnectionsRef.current.has(userId) && currentUser.id < userId) {
-                console.log(`Creating offer for ${userId}`);
                 const pc = createGroupPeerConnection(userId);
                 peerConnectionsRef.current.set(userId, pc);
                 
@@ -708,7 +744,6 @@ const App: FC = () => {
 
         peerConnectionsRef.current.forEach((pc, userId) => {
             if (!otherUsersInCall.includes(userId)) {
-                console.log(`Closing peer connection to ${userId}`);
                 pc.close();
                 peerConnectionsRef.current.delete(userId);
             }
@@ -814,7 +849,6 @@ const App: FC = () => {
     const handleGroupCallSignal = async (data: { senderId: string, type: string, [key: string]: any }) => {
         let pc = peerConnectionsRef.current.get(data.senderId);
         if (data.type === 'offer' && !pc) {
-            console.log(`Accepting offer and creating peer connection to ${data.senderId}`);
             pc = createGroupPeerConnection(data.senderId);
             peerConnectionsRef.current.set(data.senderId, pc);
         }
@@ -878,7 +912,6 @@ const App: FC = () => {
                     selectedChat={selectedChat} 
                     onStartCall={handleStartCall} 
                     onStartGroupCall={handleStartGroupCall} 
-                    // FIX: Pass an empty object for initialHistory
                     initialHistory={{}} 
                 />
                 
